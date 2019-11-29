@@ -81,9 +81,6 @@ define_pd_global(intx, StackReservedPages, DEFAULT_STACK_RESERVED_PAGES);
 define_pd_global(bool, RewriteBytecodes,     true);
 define_pd_global(bool, RewriteFrequentPairs, true);
 
-// GC Ergo Flags
-define_pd_global(size_t, CMSYoungGenPerWorker, 64*M);  // default max size of CMS young gen, per GC worker thread
-
 define_pd_global(uintx, TypeProfileLevel, 111);
 
 define_pd_global(bool, CompactStrings, true);
@@ -211,5 +208,15 @@ define_pd_global(bool, ThreadLocalHandshakes, false);
           "Use BMI2 instructions")                                          \
                                                                             \
   diagnostic(bool, UseLibmIntrinsic, true,                                  \
-          "Use Libm Intrinsics")
+          "Use Libm Intrinsics")                                            \
+                                                                            \
+  /* Minimum array size in bytes to use AVX512 intrinsics */                \
+  /* for copy, inflate and fill which don't bail out early based on any */  \
+  /* condition. When this value is set to zero compare operations like */   \
+  /* compare, vectorizedMismatch, compress can also use AVX512 intrinsics.*/\
+  diagnostic(int, AVX3Threshold, 4096,                                      \
+             "Minimum array size in bytes to use AVX512 intrinsics"         \
+             "for copy, inflate and fill. When this value is set as zero"   \
+             "compare operations can also use AVX512 intrinsics.")          \
+          range(0, max_jint)
 #endif // CPU_X86_GLOBALS_X86_HPP

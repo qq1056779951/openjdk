@@ -91,7 +91,7 @@ ZSerialOopsDo<T, F>::ZSerialOopsDo(T* iter) :
 
 template <typename T, void (T::*F)(ZRootsIteratorClosure*)>
 void ZSerialOopsDo<T, F>::oops_do(ZRootsIteratorClosure* cl) {
-  if (!_claimed && Atomic::cmpxchg(true, &_claimed, false) == false) {
+  if (!_claimed && Atomic::cmpxchg(&_claimed, false, true) == false) {
     (_iter->*F)(cl);
   }
 }
@@ -118,7 +118,7 @@ ZSerialWeakOopsDo<T, F>::ZSerialWeakOopsDo(T* iter) :
 
 template <typename T, void (T::*F)(BoolObjectClosure*, ZRootsIteratorClosure*)>
 void ZSerialWeakOopsDo<T, F>::weak_oops_do(BoolObjectClosure* is_alive, ZRootsIteratorClosure* cl) {
-  if (!_claimed && Atomic::cmpxchg(true, &_claimed, false) == false) {
+  if (!_claimed && Atomic::cmpxchg(&_claimed, false, true) == false) {
     (_iter->*F)(is_alive, cl);
   }
 }
@@ -149,7 +149,7 @@ public:
 
   virtual void do_code_blob(CodeBlob* cb) {
     nmethod* const nm = cb->as_nmethod_or_null();
-    if (nm != NULL && !nm->test_set_oops_do_mark()) {
+    if (nm != NULL && nm->oops_do_try_claim()) {
       CodeBlobToOopClosure::do_code_blob(cb);
       _bs->disarm(nm);
     }

@@ -383,7 +383,7 @@ void ShenandoahBarrierC2Support::verify(RootNode* root) {
             (!verify_helper(in1, phis, visited, ShenandoahValue, trace, barriers_used) ||
              !verify_helper(in2, phis, visited, ShenandoahValue, trace, barriers_used))) {
           phis.clear();
-          visited.Reset();
+          visited.reset();
         }
       }
     } else if (n->is_LoadStore()) {
@@ -635,7 +635,7 @@ void ShenandoahBarrierC2Support::verify(RootNode* root) {
         for (uint i = sfpt->jvms()->scloff(); i < sfpt->jvms()->endoff(); i++) {
           if (!verify_helper(sfpt->in(i), phis, visited, ShenandoahLoad, trace, barriers_used)) {
             phis.clear();
-            visited.Reset();
+            visited.reset();
           }
         }
       }
@@ -1028,12 +1028,12 @@ void ShenandoahBarrierC2Support::call_lrb_stub(Node*& ctrl, Node*& val, Node* lo
   phase->register_new_node(mm, ctrl);
 
   address target = LP64_ONLY(UseCompressedOops) NOT_LP64(false) ?
-          CAST_FROM_FN_PTR(address, ShenandoahRuntime::load_reference_barrier_fixup_narrow) :
-          CAST_FROM_FN_PTR(address, ShenandoahRuntime::load_reference_barrier_fixup);
+          CAST_FROM_FN_PTR(address, ShenandoahRuntime::load_reference_barrier_narrow) :
+          CAST_FROM_FN_PTR(address, ShenandoahRuntime::load_reference_barrier);
 
   address calladdr = is_native ? CAST_FROM_FN_PTR(address, ShenandoahRuntime::load_reference_barrier_native)
                                : target;
-  const char* name = is_native ? "oop_load_from_native_barrier" : "load_reference_barrier";
+  const char* name = is_native ? "load_reference_barrier_native" : "load_reference_barrier";
   Node* call = new CallLeafNode(ShenandoahBarrierSetC2::shenandoah_load_reference_barrier_Type(), calladdr, name, TypeRawPtr::BOTTOM);
 
   call->init_req(TypeFunc::Control, ctrl);
@@ -1272,6 +1272,38 @@ void ShenandoahBarrierC2Support::pin_and_expand(PhaseIdealLoop* phase) {
     }
     if ((ctrl->is_Proj() && ctrl->in(0)->is_CallJava()) || ctrl->is_CallJava()) {
       CallNode* call = ctrl->is_Proj() ? ctrl->in(0)->as_CallJava() : ctrl->as_CallJava();
+      if (call->entry_point() == OptoRuntime::rethrow_stub()) {
+        // The rethrow call may have too many projections to be
+        // properly handled here. Given there's no reason for a
+        // barrier to depend on the call, move it above the call
+        stack.push(lrb, 0);
+        do {
+          Node* n = stack.node();
+          uint idx = stack.index();
+          if (idx < n->req()) {
+            Node* in = n->in(idx);
+            stack.set_index(idx+1);
+            if (in != NULL) {
+              if (phase->has_ctrl(in)) {
+                if (phase->is_dominator(call, phase->get_ctrl(in))) {
+#ifdef ASSERT
+                  for (uint i = 0; i < stack.size(); i++) {
+                    assert(stack.node_at(i) != in, "node shouldn't have been seen yet");
+                  }
+#endif
+                  stack.push(in, 0);
+                }
+              } else {
+                assert(phase->is_dominator(in, call->in(0)), "no dependency on the call");
+              }
+            }
+          } else {
+            phase->set_ctrl(n, call->in(0));
+            stack.pop();
+          }
+        } while(stack.size() > 0);
+        continue;
+      }
       CallProjections projs;
       call->extract_projections(&projs, false, false);
 
@@ -2336,7 +2368,7 @@ void MemoryGraphFixer::collect_memory_nodes() {
   // Iterate over CFG nodes in rpo and propagate memory state to
   // compute memory state at regions, creating new phis if needed.
   Node_List rpo_list;
-  visited.Clear();
+  visited.clear();
   _phase->rpo(_phase->C->root(), stack, visited, rpo_list);
   Node* root = rpo_list.pop();
   assert(root == _phase->C->root(), "");

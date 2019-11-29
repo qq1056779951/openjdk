@@ -114,7 +114,8 @@ class MacroAssembler: public Assembler {
       // short offset operators (jmp and jcc)
       char* disp = (char*) &branch[1];
       int imm8 = target - (address) &disp[1];
-      guarantee(this->is8bit(imm8), "Short forward jump exceeds 8-bit offset at %s:%d", file, line);
+      guarantee(this->is8bit(imm8), "Short forward jump exceeds 8-bit offset at %s:%d",
+                file == NULL ? "<NULL>" : file, line);
       *disp = imm8;
     } else {
       int* disp = (int*) &branch[(op == 0x0F || op == 0xC7)? 2: 1];
@@ -992,6 +993,8 @@ private:
 public:
   void aesecb_encrypt(Register source_addr, Register dest_addr, Register key, Register len);
   void aesecb_decrypt(Register source_addr, Register dest_addr, Register key, Register len);
+  void aesctr_encrypt(Register src_addr, Register dest_addr, Register key, Register counter,
+                      Register len_reg, Register used, Register used_addr, Register saved_encCounter_start);
 
 #endif
 
@@ -1180,6 +1183,10 @@ public:
   void sqrtsd(XMMRegister dst, Address src)        { Assembler::sqrtsd(dst, src); }
   void sqrtsd(XMMRegister dst, AddressLiteral src);
 
+  void roundsd(XMMRegister dst, XMMRegister src, int32_t rmode)    { Assembler::roundsd(dst, src, rmode); }
+  void roundsd(XMMRegister dst, Address src, int32_t rmode)        { Assembler::roundsd(dst, src, rmode); }
+  void roundsd(XMMRegister dst, AddressLiteral src, int32_t rmode, Register scratch_reg);
+
   void sqrtss(XMMRegister dst, XMMRegister src)    { Assembler::sqrtss(dst, src); }
   void sqrtss(XMMRegister dst, Address src)        { Assembler::sqrtss(dst, src); }
   void sqrtss(XMMRegister dst, AddressLiteral src);
@@ -1232,6 +1239,10 @@ public:
 
   void vpaddw(XMMRegister dst, XMMRegister nds, XMMRegister src, int vector_len);
   void vpaddw(XMMRegister dst, XMMRegister nds, Address src, int vector_len);
+
+  void vpaddd(XMMRegister dst, XMMRegister nds, XMMRegister src, int vector_len) { Assembler::vpaddd(dst, nds, src, vector_len); }
+  void vpaddd(XMMRegister dst, XMMRegister nds, Address src, int vector_len) { Assembler::vpaddd(dst, nds, src, vector_len); }
+  void vpaddd(XMMRegister dst, XMMRegister nds, AddressLiteral src, int vector_len, Register rscratch);
 
   void vpand(XMMRegister dst, XMMRegister nds, XMMRegister src, int vector_len) { Assembler::vpand(dst, nds, src, vector_len); }
   void vpand(XMMRegister dst, XMMRegister nds, Address src, int vector_len) { Assembler::vpand(dst, nds, src, vector_len); }

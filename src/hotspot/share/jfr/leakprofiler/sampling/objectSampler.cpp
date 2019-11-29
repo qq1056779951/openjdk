@@ -93,7 +93,7 @@ static volatile int _lock = 0;
 
 ObjectSampler* ObjectSampler::acquire() {
   assert(is_created(), "invariant");
-  while (Atomic::cmpxchg(1, &_lock, 0) == 1) {}
+  while (Atomic::cmpxchg(&_lock, 0, 1) == 1) {}
   return _instance;
 }
 
@@ -110,6 +110,9 @@ static traceid get_thread_id(JavaThread* thread) {
   }
   const JfrThreadLocal* const tl = thread->jfr_thread_local();
   assert(tl != NULL, "invariant");
+  if (tl->is_excluded()) {
+    return 0;
+  }
   if (!tl->has_thread_blob()) {
     JfrCheckpointManager::create_thread_blob(thread);
   }

@@ -44,6 +44,7 @@ JVMCICompileState::JVMCICompileState(CompileTask* task):
   _failure_reason_on_C_heap(false) {
   // Get Jvmti capabilities under lock to get consistent values.
   MutexLocker mu(JvmtiThreadState_lock);
+  _jvmti_redefinition_count             = JvmtiExport::redefinition_count();
   _jvmti_can_hotswap_or_post_breakpoint = JvmtiExport::can_hotswap_or_post_breakpoint() ? 1 : 0;
   _jvmti_can_access_local_variables     = JvmtiExport::can_access_local_variables() ? 1 : 0;
   _jvmti_can_post_on_exceptions         = JvmtiExport::can_post_on_exceptions() ? 1 : 0;
@@ -51,6 +52,10 @@ JVMCICompileState::JVMCICompileState(CompileTask* task):
 }
 
 bool JVMCICompileState::jvmti_state_changed() const {
+  // Some classes were redefined
+  if (jvmti_redefinition_count() != JvmtiExport::redefinition_count()) {
+    return true;
+  }
   if (!jvmti_can_access_local_variables() &&
       JvmtiExport::can_access_local_variables()) {
     return true;
@@ -947,7 +952,7 @@ JVMCIObject JVMCIEnv::new_StackTraceElement(const methodHandle& method, int bci,
 JVMCIObject JVMCIEnv::new_HotSpotNmethod(const methodHandle& method, const char* name, jboolean isDefault, jlong compileId, JVMCI_TRAPS) {
   JavaThread* THREAD = JavaThread::current();
 
-  JVMCIObject methodObject = get_jvmci_method(method(), JVMCI_CHECK_(JVMCIObject()));
+  JVMCIObject methodObject = get_jvmci_method(method, JVMCI_CHECK_(JVMCIObject()));
 
   if (is_hotspot()) {
     InstanceKlass* ik = InstanceKlass::cast(HotSpotJVMCI::HotSpotNmethod::klass());

@@ -28,6 +28,7 @@
 #include "runtime/globals.hpp"
 #include "runtime/os.hpp"
 #include "utilities/debug.hpp"
+#include "utilities/globalDefinitions.hpp"
 #include "utilities/numberSeq.hpp"
 
 // Different defaults for different number of GC threads
@@ -78,6 +79,8 @@ G1Analytics::G1Analytics(const G1Predictions* predictor) :
     _alloc_rate_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
     _prev_collection_pause_end_ms(0.0),
     _rs_length_diff_seq(new TruncatedSeq(TruncatedSeqLength)),
+    _concurrent_refine_rate_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
+    _logged_cards_rate_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
     _cost_per_logged_card_ms_seq(new TruncatedSeq(TruncatedSeqLength)),
     _cost_scan_hcc_seq(new TruncatedSeq(TruncatedSeqLength)),
     _young_cards_per_entry_ratio_seq(new TruncatedSeq(TruncatedSeqLength)),
@@ -102,6 +105,10 @@ G1Analytics::G1Analytics(const G1Predictions* predictor) :
   int index = MIN2(ParallelGCThreads - 1, 7u);
 
   _rs_length_diff_seq->add(rs_length_diff_defaults[index]);
+  // Start with inverse of maximum STW cost.
+  _concurrent_refine_rate_ms_seq->add(1/cost_per_logged_card_ms_defaults[0]);
+  // Some applications have very low rates for logging cards.
+  _logged_cards_rate_ms_seq->add(0.0);
   _cost_per_logged_card_ms_seq->add(cost_per_logged_card_ms_defaults[index]);
   _cost_scan_hcc_seq->add(0.0);
   _young_cards_per_entry_ratio_seq->add(young_cards_per_entry_ratio_defaults[index]);
@@ -138,17 +145,9 @@ void G1Analytics::report_alloc_rate_ms(double alloc_rate) {
 
 void G1Analytics::compute_pause_time_ratio(double interval_ms, double pause_time_ms) {
   _recent_avg_pause_time_ratio = _recent_gc_times_ms->sum() / interval_ms;
-  if (_recent_avg_pause_time_ratio < 0.0 ||
-      (_recent_avg_pause_time_ratio - 1.0 > 0.0)) {
-    // Clip ratio between 0.0 and 1.0, and continue. This will be fixed in
-    // CR 6902692 by redoing the manner in which the ratio is incrementally computed.
-    if (_recent_avg_pause_time_ratio < 0.0) {
-      _recent_avg_pause_time_ratio = 0.0;
-    } else {
-      assert(_recent_avg_pause_time_ratio - 1.0 > 0.0, "Ctl-point invariant");
-      _recent_avg_pause_time_ratio = 1.0;
-    }
-  }
+
+  // Clamp the result to [0.0 ... 1.0] to filter out nonsensical results due to bad input.
+  _recent_avg_pause_time_ratio = clamp(_recent_avg_pause_time_ratio, 0.0, 1.0);
 
   // Compute the ratio of just this last pause time to the entire time range stored
   // in the vectors. Comparing this pause to the entire range, rather than only the
@@ -157,6 +156,14 @@ void G1Analytics::compute_pause_time_ratio(double interval_ms, double pause_time
   // This reduces the likelihood of a needless heap expansion being triggered.
   _last_pause_time_ratio =
     (pause_time_ms * _recent_prev_end_times_for_all_gcs_sec->num()) / interval_ms;
+}
+
+void G1Analytics::report_concurrent_refine_rate_ms(double cards_per_ms) {
+  _concurrent_refine_rate_ms_seq->add(cards_per_ms);
+}
+
+void G1Analytics::report_logged_cards_rate_ms(double cards_per_ms) {
+  _logged_cards_rate_ms_seq->add(cards_per_ms);
 }
 
 void G1Analytics::report_cost_per_logged_card_ms(double cost_per_logged_card_ms) {
@@ -215,12 +222,16 @@ void G1Analytics::report_rs_length(double rs_length) {
   _rs_length_seq->add(rs_length);
 }
 
-size_t G1Analytics::predict_rs_length_diff() const {
-  return get_new_size_prediction(_rs_length_diff_seq);
-}
-
 double G1Analytics::predict_alloc_rate_ms() const {
   return get_new_prediction(_alloc_rate_ms_seq);
+}
+
+double G1Analytics::predict_concurrent_refine_rate_ms() const {
+  return get_new_prediction(_concurrent_refine_rate_ms_seq);
+}
+
+double G1Analytics::predict_logged_cards_rate_ms() const {
+  return get_new_prediction(_logged_cards_rate_ms_seq);
 }
 
 double G1Analytics::predict_cost_per_logged_card_ms() const {
@@ -312,7 +323,7 @@ double G1Analytics::predict_cleanup_time_ms() const {
 }
 
 size_t G1Analytics::predict_rs_length() const {
-  return get_new_size_prediction(_rs_length_seq);
+  return get_new_size_prediction(_rs_length_seq) + get_new_prediction(_rs_length_diff_seq);
 }
 
 size_t G1Analytics::predict_pending_cards() const {

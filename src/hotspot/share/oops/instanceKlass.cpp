@@ -54,7 +54,7 @@
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
-#include "oops/fieldStreams.hpp"
+#include "oops/fieldStreams.inline.hpp"
 #include "oops/constantPool.hpp"
 #include "oops/instanceClassLoaderKlass.hpp"
 #include "oops/instanceKlass.inline.hpp"
@@ -69,6 +69,7 @@
 #include "prims/jvmtiThreadState.hpp"
 #include "prims/methodComparator.hpp"
 #include "runtime/atomic.hpp"
+#include "runtime/biasedLocking.hpp"
 #include "runtime/fieldDescriptor.inline.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/javaCalls.hpp"
@@ -453,8 +454,14 @@ InstanceKlass::InstanceKlass(const ClassFileParser& parser, unsigned kind, Klass
   assert(is_instance_klass(), "is layout incorrect?");
   assert(size_helper() == parser.layout_size(), "incorrect size_helper?");
 
-  if (DumpSharedSpaces || DynamicDumpSharedSpaces) {
+  if (Arguments::is_dumping_archive()) {
     SystemDictionaryShared::init_dumptime_info(this);
+  }
+
+  // Set biased locking bit for all instances of this class; it will be
+  // cleared if revocation occurs too often for this type
+  if (UseBiasedLocking && BiasedLocking::enabled()) {
+    set_prototype_header(markWord::biased_locking_prototype());
   }
 }
 
@@ -603,7 +610,7 @@ void InstanceKlass::deallocate_contents(ClassLoaderData* loader_data) {
   }
   set_annotations(NULL);
 
-  if (DumpSharedSpaces || DynamicDumpSharedSpaces) {
+  if (Arguments::is_dumping_archive()) {
     SystemDictionaryShared::remove_dumptime_info(this);
   }
 }
@@ -1090,7 +1097,7 @@ Klass* InstanceKlass::implementor() const {
     return NULL;
   } else {
     // This load races with inserts, and therefore needs acquire.
-    Klass* kls = OrderAccess::load_acquire(k);
+    Klass* kls = Atomic::load_acquire(k);
     if (kls != NULL && !kls->is_loader_alive()) {
       return NULL;  // don't return unloaded class
     } else {
@@ -1101,12 +1108,12 @@ Klass* InstanceKlass::implementor() const {
 
 
 void InstanceKlass::set_implementor(Klass* k) {
-  assert_lock_strong(Compile_lock);
+  assert_locked_or_safepoint(Compile_lock);
   assert(is_interface(), "not interface");
   Klass* volatile* addr = adr_implementor();
   assert(addr != NULL, "null addr");
   if (addr != NULL) {
-    OrderAccess::release_store(addr, k);
+    Atomic::release_store(addr, k);
   }
 }
 
@@ -1363,14 +1370,14 @@ void InstanceKlass::mask_for(const methodHandle& method, int bci,
   InterpreterOopMap* entry_for) {
   // Lazily create the _oop_map_cache at first request
   // Lock-free access requires load_acquire.
-  OopMapCache* oop_map_cache = OrderAccess::load_acquire(&_oop_map_cache);
+  OopMapCache* oop_map_cache = Atomic::load_acquire(&_oop_map_cache);
   if (oop_map_cache == NULL) {
     MutexLocker x(OopMapCacheAlloc_lock);
     // Check if _oop_map_cache was allocated while we were waiting for this lock
     if ((oop_map_cache = _oop_map_cache) == NULL) {
       oop_map_cache = new OopMapCache();
       // Ensure _oop_map_cache is stable, since it is examined without a lock
-      OrderAccess::release_store(&_oop_map_cache, oop_map_cache);
+      Atomic::release_store(&_oop_map_cache, oop_map_cache);
     }
   }
   // _oop_map_cache is constant after init; lookup below does its own locking.
@@ -1570,11 +1577,30 @@ static int linear_search(const Array<Method*>* methods,
 }
 #endif
 
-static int binary_search(const Array<Method*>* methods, const Symbol* name) {
+bool InstanceKlass::_disable_method_binary_search = false;
+
+int InstanceKlass::quick_search(const Array<Method*>* methods, const Symbol* name) {
   int len = methods->length();
-  // methods are sorted, so do binary search
   int l = 0;
   int h = len - 1;
+
+  if (_disable_method_binary_search) {
+    // At the final stage of dynamic dumping, the methods array may not be sorted
+    // by ascending addresses of their names, so we can't use binary search anymore.
+    // However, methods with the same name are still laid out consecutively inside the
+    // methods array, so let's look for the first one that matches.
+    assert(DynamicDumpSharedSpaces, "must be");
+    while (l <= h) {
+      Method* m = methods->at(l);
+      if (m->name() == name) {
+        return l;
+      }
+      l ++;
+    }
+    return -1;
+  }
+
+  // methods are sorted by ascending addresses of their names, so do binary search
   while (l <= h) {
     int mid = (l + h) >> 1;
     Method* m = methods->at(mid);
@@ -1726,7 +1752,7 @@ int InstanceKlass::find_method_index(const Array<Method*>* methods,
   const bool skipping_overpass = (overpass_mode == skip_overpass);
   const bool skipping_static = (static_mode == skip_static);
   const bool skipping_private = (private_mode == skip_private);
-  const int hit = binary_search(methods, name);
+  const int hit = quick_search(methods, name);
   if (hit != -1) {
     const Method* const m = methods->at(hit);
 
@@ -1777,7 +1803,7 @@ int InstanceKlass::find_method_by_name(const Array<Method*>* methods,
                                        const Symbol* name,
                                        int* end_ptr) {
   assert(end_ptr != NULL, "just checking");
-  int start = binary_search(methods, name);
+  int start = quick_search(methods, name);
   int end = start + 1;
   if (start != -1) {
     while (start - 1 >= 0 && (methods->at(start - 1))->name() == name) --start;
@@ -2088,7 +2114,7 @@ jmethodID InstanceKlass::get_jmethod_id_fetch_or_update(
     // The jmethodID cache can be read while unlocked so we have to
     // make sure the new jmethodID is complete before installing it
     // in the cache.
-    OrderAccess::release_store(&jmeths[idnum+1], id);
+    Atomic::release_store(&jmeths[idnum+1], id);
   } else {
     *to_dealloc_id_p = new_id; // save new id for later delete
   }
@@ -2170,11 +2196,11 @@ void InstanceKlass::clean_implementors_list() {
     assert (ClassUnloading, "only called for ClassUnloading");
     for (;;) {
       // Use load_acquire due to competing with inserts
-      Klass* impl = OrderAccess::load_acquire(adr_implementor());
+      Klass* impl = Atomic::load_acquire(adr_implementor());
       if (impl != NULL && !impl->is_loader_alive()) {
         // NULL this field, might be an unloaded klass or NULL
         Klass* volatile* klass = adr_implementor();
-        if (Atomic::cmpxchg((Klass*)NULL, klass, impl) == impl) {
+        if (Atomic::cmpxchg(klass, impl, (Klass*)NULL) == impl) {
           // Successfully unlinking implementor.
           if (log_is_enabled(Trace, class, unload)) {
             ResourceMark rm;
@@ -2229,7 +2255,7 @@ bool InstanceKlass::should_store_fingerprint(bool is_unsafe_anonymous) {
     // (1) We are running AOT to generate a shared library.
     return true;
   }
-  if (DumpSharedSpaces || DynamicDumpSharedSpaces) {
+  if (Arguments::is_dumping_archive()) {
     // (2) We are running -Xshare:dump or -XX:ArchiveClassesAtExit to create a shared archive
     return true;
   }
@@ -2333,8 +2359,8 @@ void InstanceKlass::remove_unshareable_info() {
   // being added to class hierarchy (see SystemDictionary:::add_to_hierarchy()).
   _init_state = allocated;
 
-  {
-    MutexLocker ml(Compile_lock);
+  { // Otherwise this needs to take out the Compile_lock.
+    assert(SafepointSynchronize::is_at_safepoint(), "only called at safepoint");
     init_implementor();
   }
 
@@ -2358,6 +2384,7 @@ void InstanceKlass::remove_unshareable_info() {
   _breakpoints = NULL;
   _previous_versions = NULL;
   _cached_class_file = NULL;
+  _jvmti_cached_class_field_map = NULL;
 #endif
 
   _init_thread = NULL;
@@ -2366,6 +2393,8 @@ void InstanceKlass::remove_unshareable_info() {
   _oop_map_cache = NULL;
   // clear _nest_host to ensure re-load at runtime
   _nest_host = NULL;
+  _package_entry = NULL;
+  _dep_context_last_cleaned = 0;
 }
 
 void InstanceKlass::remove_java_mirror() {
@@ -2407,6 +2436,11 @@ void InstanceKlass::restore_unshareable_info(ClassLoaderData* loader_data, Handl
     // Array classes have null protection domain.
     // --> see ArrayKlass::complete_create_array_klass()
     array_klasses()->restore_unshareable_info(ClassLoaderData::the_null_class_loader_data(), Handle(), CHECK);
+  }
+
+  // Initialize current biased locking state.
+  if (UseBiasedLocking && BiasedLocking::enabled()) {
+    set_prototype_header(markWord::biased_locking_prototype());
   }
 }
 
@@ -2477,7 +2511,7 @@ void InstanceKlass::unload_class(InstanceKlass* ik) {
   // notify ClassLoadingService of class unload
   ClassLoadingService::notify_class_unloaded(ik);
 
-  if (DumpSharedSpaces || DynamicDumpSharedSpaces) {
+  if (Arguments::is_dumping_archive()) {
     SystemDictionaryShared::remove_dumptime_info(ik);
   }
 
@@ -2497,10 +2531,18 @@ void InstanceKlass::unload_class(InstanceKlass* ik) {
 #endif
 }
 
+static void method_release_C_heap_structures(Method* m) {
+  m->release_C_heap_structures();
+}
+
 void InstanceKlass::release_C_heap_structures(InstanceKlass* ik) {
   // Clean up C heap
   ik->release_C_heap_structures();
   ik->constants()->release_C_heap_structures();
+
+  // Deallocate and call destructors for MDO mutexes
+  ik->methods_do(method_release_C_heap_structures);
+
 }
 
 void InstanceKlass::release_C_heap_structures() {
@@ -2586,7 +2628,7 @@ const char* InstanceKlass::signature_name() const {
 
   // Add L as type indicator
   int dest_index = 0;
-  dest[dest_index++] = 'L';
+  dest[dest_index++] = JVM_SIGNATURE_CLASS;
 
   // Add the actual class name
   for (int src_index = 0; src_index < src_length; ) {
@@ -2599,7 +2641,7 @@ const char* InstanceKlass::signature_name() const {
   }
 
   // Add the semicolon and the NULL
-  dest[dest_index++] = ';';
+  dest[dest_index++] = JVM_SIGNATURE_ENDCLASS;
   dest[dest_index] = '\0';
   return dest;
 }
@@ -3606,7 +3648,7 @@ void InstanceKlass::verify_on(outputStream* st) {
     Array<int>* method_ordering = this->method_ordering();
     int length = method_ordering->length();
     if (JvmtiExport::can_maintain_original_method_order() ||
-        ((UseSharedSpaces || DumpSharedSpaces) && length != 0)) {
+        ((UseSharedSpaces || Arguments::is_dumping_archive()) && length != 0)) {
       guarantee(length == methods()->length(), "invalid method ordering length");
       jlong sum = 0;
       for (int j = 0; j < length; j++) {

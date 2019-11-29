@@ -26,8 +26,8 @@
 #define CPU_X86_VM_VERSION_X86_HPP
 
 #include "memory/universe.hpp"
+#include "runtime/abstract_vm_version.hpp"
 #include "runtime/globals_extension.hpp"
-#include "runtime/vm_version.hpp"
 
 class VM_Version : public Abstract_VM_Version {
   friend class VMStructs;
@@ -366,7 +366,7 @@ enum Extended_Family {
     CPU_MODEL_HASWELL_E3     = 0x3c,
     CPU_MODEL_HASWELL_E7     = 0x3f,
     CPU_MODEL_BROADWELL      = 0x3d,
-    CPU_MODEL_SKYLAKE        = CPU_MODEL_HASWELL_E3
+    CPU_MODEL_SKYLAKE        = 0x55
   };
 
   // cpuid information block.  All info derived from executing cpuid with

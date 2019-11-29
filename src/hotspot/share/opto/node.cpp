@@ -546,9 +546,6 @@ Node *Node::clone() const {
   if (n->is_SafePoint()) {
     n->as_SafePoint()->clone_replaced_nodes();
   }
-  if (n->is_Load()) {
-    n->as_Load()->copy_barrier_info(this);
-  }
   return n;                     // Return the clone
 }
 
@@ -1471,10 +1468,6 @@ bool Node::rematerialize() const {
 // Nodes which use memory without consuming it, hence need antidependences.
 bool Node::needs_anti_dependence_check() const {
   if (req() < 2 || (_flags & Flag_needs_anti_dependence_check) == 0) {
-    return false;
-  }
-  BarrierSetC2* bs = BarrierSet::barrier_set()->barrier_set_c2();
-  if (!bs->needs_anti_dependence_check(this)) {
     return false;
   }
   return in(1)->bottom_type()->has_memory();
@@ -2406,14 +2399,15 @@ void Node_List::dump_simple() const {
 
 //=============================================================================
 //------------------------------remove-----------------------------------------
-void Unique_Node_List::remove( Node *n ) {
-  if( _in_worklist[n->_idx] ) {
-    for( uint i = 0; i < size(); i++ )
-      if( _nodes[i] == n ) {
-        map(i,Node_List::pop());
-        _in_worklist >>= n->_idx;
+void Unique_Node_List::remove(Node* n) {
+  if (_in_worklist.test(n->_idx)) {
+    for (uint i = 0; i < size(); i++) {
+      if (_nodes[i] == n) {
+        map(i, Node_List::pop());
+        _in_worklist.remove(n->_idx);
         return;
       }
+    }
     ShouldNotReachHere();
   }
 }
@@ -2422,11 +2416,11 @@ void Unique_Node_List::remove( Node *n ) {
 // Remove useless nodes from worklist
 void Unique_Node_List::remove_useless_nodes(VectorSet &useful) {
 
-  for( uint i = 0; i < size(); ++i ) {
+  for (uint i = 0; i < size(); ++i) {
     Node *n = at(i);
     assert( n != NULL, "Did not expect null entries in worklist");
-    if( ! useful.test(n->_idx) ) {
-      _in_worklist >>= n->_idx;
+    if (!useful.test(n->_idx)) {
+      _in_worklist.remove(n->_idx);
       map(i,Node_List::pop());
       // Node *replacement = Node_List::pop();
       // if( i != size() ) { // Check if removing last entry

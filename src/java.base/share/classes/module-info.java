@@ -135,7 +135,8 @@ module java.base {
     exports com.sun.security.ntlm to
         java.security.sasl;
     exports jdk.internal to
-        jdk.jfr;
+        jdk.jfr,
+        jdk.compiler;
     exports jdk.internal.access to
         java.desktop,
         java.logging,
@@ -239,8 +240,9 @@ module java.base {
         jdk.naming.dns;
     exports sun.net.util to
         java.desktop,
+        java.net.http,
         jdk.jconsole,
-        java.net.http;
+        jdk.sctp;
     exports sun.net.www to
         java.net.http,
         jdk.jartool;

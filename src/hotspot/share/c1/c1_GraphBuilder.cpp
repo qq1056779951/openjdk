@@ -33,13 +33,13 @@
 #include "ci/ciKlass.hpp"
 #include "ci/ciMemberName.hpp"
 #include "ci/ciUtilities.inline.hpp"
+#include "compiler/compilationPolicy.hpp"
 #include "compiler/compileBroker.hpp"
 #include "interpreter/bytecode.hpp"
 #include "jfr/jfrEvents.hpp"
 #include "memory/resourceArea.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
-#include "runtime/compilationPolicy.hpp"
 #include "runtime/vm_version.hpp"
 #include "utilities/bitMap.inline.hpp"
 
@@ -2590,7 +2590,7 @@ void PhiSimplifier::block_do(BlockBegin* b) {
 
 #ifdef ASSERT
   for_each_phi_fun(b, phi,
-                   assert(phi->operand_count() != 1 || phi->subst() != phi, "missed trivial simplification");
+                   assert(phi->operand_count() != 1 || phi->subst() != phi || phi->is_illegal(), "missed trivial simplification");
   );
 
   ValueStack* state = b->state()->caller_state();

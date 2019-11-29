@@ -66,8 +66,7 @@ import java.util.Collections;
  * @see     java.nio.channels.DatagramChannel
  * @since 1.0
  */
-public
-class DatagramSocket implements java.io.Closeable {
+public class DatagramSocket implements java.io.Closeable {
     /**
      * Various states of this socket.
      */
@@ -338,7 +337,6 @@ class DatagramSocket implements java.io.Closeable {
         }
         // creates a udp socket
         impl.create();
-        impl.setDatagramSocket(this);
         created = true;
     }
 
@@ -434,14 +432,15 @@ class DatagramSocket implements java.io.Closeable {
      * verify that datagrams are permitted to be sent and received
      * respectively.
      *
-     * <p> When a socket is connected, {@link #receive receive} and
-     * {@link #send send} <b>will not perform any security checks</b>
-     * on incoming and outgoing packets, other than matching the packet's
-     * and the socket's address and port. On a send operation, if the
-     * packet's address is set and the packet's address and the socket's
-     * address do not match, an {@code IllegalArgumentException} will be
-     * thrown. A socket connected to a multicast address may only be used
-     * to send packets.
+     * <p> Care should be taken to ensure that a connected datagram socket
+     * is not shared with untrusted code. When a socket is connected,
+     * {@link #receive receive} and {@link #send send} <b>will not perform
+     * any security checks</b> on incoming and outgoing packets, other than
+     * matching the packet's and the socket's address and port. On a send
+     * operation, if the packet's address is set and the packet's address
+     * and the socket's address do not match, an {@code IllegalArgumentException}
+     * will be thrown. A socket connected to a multicast address may only
+     * be used to send packets.
      *
      * @param address the remote address for the socket
      *
@@ -605,7 +604,6 @@ class DatagramSocket implements java.io.Closeable {
      * @see #bind(SocketAddress)
      * @since 1.4
      */
-
     public SocketAddress getLocalSocketAddress() {
         if (isClosed())
             return null;
@@ -646,7 +644,9 @@ class DatagramSocket implements java.io.Closeable {
      *             if this socket has an associated channel,
      *             and the channel is in non-blocking mode.
      * @throws     IllegalArgumentException if the socket is connected,
-     *             and connected address and packet address differ.
+     *             and connected address and packet address differ, or
+     *             if the socket is not connected and the packet address
+     *             is not set.
      *
      * @see        java.net.DatagramPacket
      * @see        SecurityManager#checkMulticast(InetAddress)
@@ -655,12 +655,15 @@ class DatagramSocket implements java.io.Closeable {
      * @spec JSR-51
      */
     public void send(DatagramPacket p) throws IOException  {
-        InetAddress packetAddress = null;
         synchronized (p) {
             if (isClosed())
                 throw new SocketException("Socket is closed");
-            checkAddress (p.getAddress(), "send");
+            InetAddress packetAddress = p.getAddress();
+            checkAddress (packetAddress, "send");
             if (connectState == ST_NOT_CONNECTED) {
+                if (packetAddress == null) {
+                    throw new IllegalArgumentException("Address not set");
+                }
                 // check the address is ok with the security manager on every send.
                 SecurityManager security = System.getSecurityManager();
 
@@ -669,16 +672,15 @@ class DatagramSocket implements java.io.Closeable {
                 // while you are trying to send the packet for example
                 // after the security check but before the send.
                 if (security != null) {
-                    if (p.getAddress().isMulticastAddress()) {
-                        security.checkMulticast(p.getAddress());
+                    if (packetAddress.isMulticastAddress()) {
+                        security.checkMulticast(packetAddress);
                     } else {
-                        security.checkConnect(p.getAddress().getHostAddress(),
+                        security.checkConnect(packetAddress.getHostAddress(),
                                               p.getPort());
                     }
                 }
             } else {
                 // we're connected
-                packetAddress = p.getAddress();
                 if (packetAddress == null) {
                     p.setAddress(connectedAddress);
                     p.setPort(connectedPort);
@@ -708,9 +710,11 @@ class DatagramSocket implements java.io.Closeable {
      * the length of the received message. If the message is longer than
      * the packet's length, the message is truncated.
      * <p>
-     * If there is a security manager, a packet cannot be received if the
-     * security manager's {@code checkAccept} method
-     * does not allow it.
+     * If there is a security manager, and the socket is not currently
+     * connected to a remote address, a packet cannot be received if the
+     * security manager's {@code checkAccept} method does not allow it.
+     * Datagrams that are not permitted by the security manager are silently
+     * discarded.
      *
      * @param      p   the {@code DatagramPacket} into which to place
      *                 the incoming data.
@@ -850,7 +854,7 @@ class DatagramSocket implements java.io.Closeable {
     public InetAddress getLocalAddress() {
         if (isClosed())
             return null;
-        InetAddress in = null;
+        InetAddress in;
         try {
             in = (InetAddress) getImpl().getOption(SocketOptions.SO_BINDADDR);
             if (in.isAnyLocalAddress()) {
@@ -871,8 +875,8 @@ class DatagramSocket implements java.io.Closeable {
      * is bound.
      *
      * @return  the port number on the local host to which this socket is bound,
-                {@code -1} if the socket is closed, or
-                {@code 0} if it is not bound yet.
+     *          {@code -1} if the socket is closed, or
+     *          {@code 0} if it is not bound yet.
      */
     public int getLocalPort() {
         if (isClosed())
@@ -884,24 +888,28 @@ class DatagramSocket implements java.io.Closeable {
         }
     }
 
-    /** Enable/disable SO_TIMEOUT with the specified timeout, in
-     *  milliseconds. With this option set to a non-zero timeout,
-     *  a call to receive() for this DatagramSocket
-     *  will block for only this amount of time.  If the timeout expires,
-     *  a <B>java.net.SocketTimeoutException</B> is raised, though the
-     *  DatagramSocket is still valid.  The option <B>must</B> be enabled
-     *  prior to entering the blocking operation to have effect.  The
-     *  timeout must be {@code > 0}.
-     *  A timeout of zero is interpreted as an infinite timeout.
+    /**
+     * Enable/disable SO_TIMEOUT with the specified timeout, in
+     * milliseconds. With this option set to a positive timeout value,
+     * a call to receive() for this DatagramSocket
+     * will block for only this amount of time.  If the timeout expires,
+     * a <B>java.net.SocketTimeoutException</B> is raised, though the
+     * DatagramSocket is still valid. A timeout of zero is interpreted
+     * as an infinite timeout.
+     * The option <B>must</B> be enabled prior to entering the blocking
+     * operation to have effect.
      *
      * @param timeout the specified timeout in milliseconds.
      * @throws SocketException if there is an error in the underlying protocol, such as an UDP error.
+     * @throws IllegalArgumentException if {@code timeout} is negative
      * @since   1.1
      * @see #getSoTimeout()
      */
     public synchronized void setSoTimeout(int timeout) throws SocketException {
         if (isClosed())
             throw new SocketException("Socket is closed");
+        if (timeout < 0)
+            throw new IllegalArgumentException("timeout < 0");
         getImpl().setOption(SocketOptions.SO_TIMEOUT, timeout);
     }
 
@@ -957,8 +965,7 @@ class DatagramSocket implements java.io.Closeable {
      * negative.
      * @see #getSendBufferSize()
      */
-    public synchronized void setSendBufferSize(int size)
-    throws SocketException{
+    public synchronized void setSendBufferSize(int size) throws SocketException {
         if (!(size > 0)) {
             throw new IllegalArgumentException("negative send size");
         }
@@ -1015,8 +1022,7 @@ class DatagramSocket implements java.io.Closeable {
      * negative.
      * @see #getReceiveBufferSize()
      */
-    public synchronized void setReceiveBufferSize(int size)
-    throws SocketException{
+    public synchronized void setReceiveBufferSize(int size) throws SocketException {
         if (size <= 0) {
             throw new IllegalArgumentException("invalid receive size");
         }
@@ -1033,8 +1039,7 @@ class DatagramSocket implements java.io.Closeable {
      * @throws    SocketException if there is an error in the underlying protocol, such as an UDP error.
      * @see #setReceiveBufferSize(int)
      */
-    public synchronized int getReceiveBufferSize()
-    throws SocketException{
+    public synchronized int getReceiveBufferSize() throws SocketException {
         if (isClosed())
             throw new SocketException("Socket is closed");
         int result = 0;

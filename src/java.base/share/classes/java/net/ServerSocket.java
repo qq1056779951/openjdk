@@ -32,6 +32,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.Collections;
 
+import sun.security.util.SecurityConstants;
 import sun.net.PlatformSocketImpl;
 
 /**
@@ -51,8 +52,7 @@ import sun.net.PlatformSocketImpl;
  * @see     java.nio.channels.ServerSocketChannel
  * @since   1.0
  */
-public
-class ServerSocket implements java.io.Closeable {
+public class ServerSocket implements java.io.Closeable {
     /**
      * Various states of this socket.
      */
@@ -73,11 +73,23 @@ class ServerSocket implements java.io.Closeable {
      *
      * @throws     NullPointerException if impl is {@code null}.
      *
+     * @throws     SecurityException if a security manager is set and
+     *             its {@code checkPermission} method doesn't allow
+     *             {@code NetPermission("setSocketImpl")}.
      * @since 12
      */
     protected ServerSocket(SocketImpl impl) {
         Objects.requireNonNull(impl);
+        checkPermission();
         this.impl = impl;
+    }
+
+    private static Void checkPermission() {
+        SecurityManager sm = System.getSecurityManager();
+        if (sm != null) {
+            sm.checkPermission(SecurityConstants.SET_SOCKETIMPL_PERMISSION);
+        }
+        return null;
     }
 
     /**
@@ -736,14 +748,15 @@ class ServerSocket implements java.io.Closeable {
 
     /**
      * Enable/disable {@link SocketOptions#SO_TIMEOUT SO_TIMEOUT} with the
-     * specified timeout, in milliseconds.  With this option set to a non-zero
-     * timeout, a call to accept() for this ServerSocket
+     * specified timeout, in milliseconds.  With this option set to a positive
+     * timeout value, a call to accept() for this ServerSocket
      * will block for only this amount of time.  If the timeout expires,
      * a <B>java.net.SocketTimeoutException</B> is raised, though the
-     * ServerSocket is still valid.  The option <B>must</B> be enabled
-     * prior to entering the blocking operation to have effect.  The
-     * timeout must be {@code > 0}.
-     * A timeout of zero is interpreted as an infinite timeout.
+     * ServerSocket is still valid. A timeout of zero is interpreted as an
+     * infinite timeout.
+     * The option <B>must</B> be enabled prior to entering the blocking
+     * operation to have effect.
+     *
      * @param timeout the specified timeout, in milliseconds
      * @throws  SocketException if there is an error in the underlying protocol,
      *          such as a TCP error

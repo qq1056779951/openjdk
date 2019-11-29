@@ -33,6 +33,7 @@
 #include "gc/g1/heapRegionRemSet.hpp"
 #include "gc/g1/heapRegionSet.hpp"
 #include "logging/logStream.hpp"
+#include "runtime/orderAccess.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/globalDefinitions.hpp"
 #include "utilities/quickSort.hpp"
@@ -409,7 +410,7 @@ double G1CollectionSet::finalize_young_part(double target_pause_time_ms, G1Survi
   guarantee(target_pause_time_ms > 0.0,
             "target_pause_time_ms = %1.6lf should be positive", target_pause_time_ms);
 
-  size_t pending_cards = _policy->pending_cards();
+  size_t pending_cards = _policy->pending_cards_at_gc_start();
   double base_time_ms = _policy->predict_base_elapsed_time_ms(pending_cards);
   double time_remaining_ms = MAX2(target_pause_time_ms - base_time_ms, 0.0);
 

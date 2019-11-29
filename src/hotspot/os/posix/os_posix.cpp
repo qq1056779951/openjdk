@@ -30,6 +30,8 @@
 #include "runtime/frame.inline.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "services/memTracker.hpp"
+#include "runtime/atomic.hpp"
+#include "runtime/orderAccess.hpp"
 #include "utilities/align.hpp"
 #include "utilities/events.hpp"
 #include "utilities/formatBuffer.hpp"
@@ -165,11 +167,6 @@ size_t os::lasterror(char *buf, size_t len) {
   ::strncpy(buf, s, n);
   buf[n] = '\0';
   return n;
-}
-
-bool os::is_debugger_attached() {
-  // not implemented
-  return false;
 }
 
 void os::wait_for_keypress_at_exit(void) {
@@ -373,8 +370,12 @@ struct tm* os::gmtime_pd(const time_t* clock, struct tm*  res) {
 void os::Posix::print_load_average(outputStream* st) {
   st->print("load average:");
   double loadavg[3];
-  os::loadavg(loadavg, 3);
-  st->print("%0.02f %0.02f %0.02f", loadavg[0], loadavg[1], loadavg[2]);
+  int res = os::loadavg(loadavg, 3);
+  if (res != -1) {
+    st->print("%0.02f %0.02f %0.02f", loadavg[0], loadavg[1], loadavg[2]);
+  } else {
+    st->print(" Unavailable");
+  }
   st->cr();
 }
 
@@ -686,6 +687,9 @@ static const struct {
 #endif
   {  SIGHUP,      "SIGHUP" },
   {  SIGILL,      "SIGILL" },
+#ifdef SIGINFO
+  {  SIGINFO,     "SIGINFO" },
+#endif
   {  SIGINT,      "SIGINT" },
 #ifdef SIGIO
   {  SIGIO,       "SIGIO" },
@@ -1898,7 +1902,7 @@ void os::PlatformEvent::park() {       // AKA "down()"
   // atomically decrement _event
   for (;;) {
     v = _event;
-    if (Atomic::cmpxchg(v - 1, &_event, v) == v) break;
+    if (Atomic::cmpxchg(&_event, v, v - 1) == v) break;
   }
   guarantee(v >= 0, "invariant");
 
@@ -1938,7 +1942,7 @@ int os::PlatformEvent::park(jlong millis) {
   // atomically decrement _event
   for (;;) {
     v = _event;
-    if (Atomic::cmpxchg(v - 1, &_event, v) == v) break;
+    if (Atomic::cmpxchg(&_event, v, v - 1) == v) break;
   }
   guarantee(v >= 0, "invariant");
 
@@ -1996,7 +2000,7 @@ void os::PlatformEvent::unpark() {
   // but only in the correctly written condition checking loops of ObjectMonitor,
   // Mutex/Monitor, Thread::muxAcquire and JavaThread::sleep
 
-  if (Atomic::xchg(1, &_event) >= 0) return;
+  if (Atomic::xchg(&_event, 1) >= 0) return;
 
   int status = pthread_mutex_lock(_mutex);
   assert_status(status == 0, status, "mutex_lock");
@@ -2044,7 +2048,7 @@ void Parker::park(bool isAbsolute, jlong time) {
   // Return immediately if a permit is available.
   // We depend on Atomic::xchg() having full barrier semantics
   // since we are doing a lock-free update to _counter.
-  if (Atomic::xchg(0, &_counter) > 0) return;
+  if (Atomic::xchg(&_counter, 0) > 0) return;
 
   Thread* thread = Thread::current();
   assert(thread->is_Java_thread(), "Must be JavaThread");
@@ -2073,10 +2077,12 @@ void Parker::park(bool isAbsolute, jlong time) {
   // the ThreadBlockInVM() CTOR and DTOR may grab Threads_lock.
   ThreadBlockInVM tbivm(jt);
 
+  // Can't access interrupt state now that we are _thread_blocked. If we've
+  // been interrupted since we checked above then _counter will be > 0.
+
   // Don't wait if cannot get lock since interference arises from
-  // unparking. Also re-check interrupt before trying wait.
-  if (jt->is_interrupted(false) ||
-      pthread_mutex_trylock(_mutex) != 0) {
+  // unparking.
+  if (pthread_mutex_trylock(_mutex) != 0) {
     return;
   }
 
